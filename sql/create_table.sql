@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS day37_test(
+    request_id TEXT PRIMARY KEY,
+    created_at TIMESTAMPTZ NOT NULL,
+    model_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    stt_ms DOUBLE PRECISION NOT NULL,
+    reply_ms DOUBLE PRECISION NOT NULL,
+    tts_ms DOUBLE PRECISION NOT NULL,
+    total_ms DOUBLE PRECISION NOT NULL
+)
+
