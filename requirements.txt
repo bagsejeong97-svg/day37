@@ -3,3 +3,4 @@ psycopg[binary]>=3.2
 python-dotenv
 faster-whisper>=1.0.0
 av<19
+edge-tts
