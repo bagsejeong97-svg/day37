@@ -116,8 +116,8 @@ def synthesize_speech(text, voice_id):
     return mp3_bytes, 'audio/mpeg'
 
 def store_meta(meta):
-    # JSONL 기록 (표준 open 함수 사용으로 metadata_errors 충돌 방지)
-    with open(LOG_PATH, 'a', encoding='utf-8') as f:
+    # JSONL 기록
+    with LOG_PATH.open('a', encoding='utf-8') as f:
         f.write(json.dumps(meta, ensure_ascii=False) + '\n')
 
     database_url = os.getenv('DATABASE_URL', '').strip()
@@ -130,4 +130,133 @@ def store_meta(meta):
             sql = load_sql('create_table.sql')
             sql1 = load_sql('insert.sql')
             with conn.cursor() as cur:
-                cur.
+                cur.execute(sql)
+                cur.execute(sql1, (
+                    meta['request_id'], meta['created_at'], meta['model_version'],
+                    meta['status'], meta['stt_ms'], meta['reply_ms'],
+                    meta['tts_ms'], meta['total_ms']
+                ))
+            # 💡 핵심 수정: 데이터베이스 변경 사항을 영구 반영하기 위해 반드시 commit 필요!
+            conn.commit()
+    except Exception as e:
+        # DB 저장 실패 시 원인을 명확하게 화면에 노출하도록 수정
+        st.warning(f'DB 실행 이력 저장 실패: {type(e).__name__}: {e}')
+
+def run_pipeline(audio, model_size, voice_id):
+    request_id = str(uuid.uuid4())
+    created_at = datetime.now(timezone.utc).isoformat()
+    model_version = f'whisper-{model_size}/edge-tts/{voice_id}'
+
+    marks = {'stt_ms': 0.0, 'reply_ms': 0.0, 'tts_ms': 0.0}
+    started = time.perf_counter()
+
+    result = None
+    error = None
+    try:
+        t0 = time.perf_counter()
+        transcript = transcribe_wav(audio, model_size)
+        marks['stt_ms'] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        reply = build_reply(transcript)
+        marks['reply_ms'] = (time.perf_counter() - t0) * 1000
+
+        t0 = time.perf_counter()
+        output, mime = synthesize_speech(reply, voice_id)
+        marks['tts_ms'] = (time.perf_counter() - t0) * 1000
+
+        result = (transcript, reply, output, mime)
+
+    except Exception as e:
+        error = e
+
+    elapsed = (time.perf_counter() - started) * 1000
+
+    meta = {
+        'request_id': request_id,
+        'created_at': created_at,
+        'model_version': model_version,
+        'status': 'error' if error else 'success',
+        'stt_ms': round(marks.get('stt_ms', 0.0), 2),
+        'reply_ms': round(marks.get('reply_ms', 0.0), 2),
+        'tts_ms': round(marks.get('tts_ms', 0.0), 2),
+        'total_ms': round(elapsed, 2),
+    }
+
+    store_meta(meta)
+
+    return result, marks, meta, error
+
+def main():
+    st.set_page_config(
+        page_title='캠퍼스 시설 안내 음성 도우미',
+        layout='centered'
+    )
+
+    st.title('캠퍼스 시설별 안내 음성 도우미')
+    st.caption('WAV파일 > faster-whisper STT > 규칙 기반 응답 > edge-tts 음성 합성')
+
+    uploaded = st.audio_input('마이크로 한국어 음성을 녹음하세요')
+
+    model_size = st.selectbox(
+        'STT 모델',
+        ['tiny', 'base', 'small', 'medium'],
+        index=1
+    )
+
+    voice_id = st.selectbox(
+        'TTS 목소리',
+        ['ko-KR-SunHiNeural', 'ko-KR-InJoonNeural']
+    )
+
+    submitted = st.button('음성 파이프라인 실행')
+
+    if not submitted:
+        return
+
+    if uploaded is None:
+        st.error('먼저 음성 녹음을 완료해주세요')
+        return
+
+    audio = uploaded.getvalue()
+
+    if not audio or len(audio) > MAX_BYTES:
+        st.error(f'WAV 파일은 0바이트보다 크고 {MAX_BYTES}바이트 이하여야 합니다.')
+        return
+
+    try:
+        audio_info = validate_wav(audio)
+    except ValueError as e:
+        st.error(str(e))
+        return
+
+    st.subheader('입력 WAV 파일')
+    st.audio(audio, format='audio/wav')
+    st.json(audio_info)
+
+    with st.spinner('실제 음성 인식 및 음성 합성 처리 중...'):
+        result, marks, meta, error = run_pipeline(audio, model_size, voice_id)
+
+    if error:
+        st.error(f'처리 오류: {type(error).__name__}: {error}')
+    else:
+        transcript, reply, output, mime = result
+
+        st.subheader('STT 인식 결과')
+        st.write(transcript or '(인식된 음성이 없습니다)')
+
+        st.subheader('응답 문장')
+        st.write(reply)
+
+        st.subheader('TTS 합성 음성')
+        st.audio(output, format=mime)
+
+        st.download_button('TTS MP3 저장', output, 'reply.mp3', mime=mime)
+
+    st.metric('총 처리시간', f"{meta['total_ms']:.0f} ms")
+
+    st.bar_chart(marks)
+    st.json(meta)
+
+if __name__ == '__main__':
+    main()
