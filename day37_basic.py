@@ -65,7 +65,7 @@ def validate_wav(audio):
         'duration_sec': round(frames / sample_rate, 2)
     }
 
-@st.cache_resource(show_spinner='Wisper 모델을 로딩하고 있습니다...')
+@st.cache_resource(show_spinner='Whisper 모델을 로딩하고 있습니다...')
 def load_stt_model(model_size):
     from faster_whisper import WhisperModel
     return WhisperModel(model_size, device='CPU', compute_type='int8')
